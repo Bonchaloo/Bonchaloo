@@ -1,0 +1,106 @@
+name: Watch
+
+on:
+  schedule:
+    # Every 6 hours. Cron on GitHub is best effort and can run late under load.
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Comma-separated target ids to check (blank = all enabled)'
+        required: false
+        type: string
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      # Declared at job level so the notify step's `if` can see whether it is set.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: watch/package-lock.json
+
+      - name: Install dependencies
+        working-directory: watch
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: watch
+        run: npx playwright install --with-deps chromium
+
+      - name: Check targets
+        working-directory: watch
+        run: node run.mjs ${{ inputs.only && format('--only {0}', inputs.only) || '' }}
+
+      - name: Write run summary
+        working-directory: watch
+        run: |
+          {
+            echo "## Watch run"
+            echo
+            jq -r '"\(.total) checked, \(.changed) changed, \(.errors) failed"' last-run.json
+            echo
+            echo '| target | status | detail |'
+            echo '| --- | --- | --- |'
+            jq -r '.results[] | "| \(.id) | \(.status) | \(((.error // (.value | tostring))[0:120]) | gsub("\\|"; "\\|")) |"' last-run.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit results
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add watch/state watch/history watch/snapshots watch/last-run.json
+          if git diff --cached --quiet; then
+            echo 'nothing to commit'
+            exit 0
+          fi
+          git commit -m "watch: results for $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Another run may have landed while this one was checking pages.
+          git pull --rebase --autostash origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: Open an issue when a target changed
+        working-directory: watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          changed=$(jq -r '.changed' last-run.json)
+          if [ "$changed" -eq 0 ]; then
+            echo 'no changes'
+            exit 0
+          fi
+          body=$(jq -r '
+            "The watcher saw \(.changed) change(s) at \(.checkedAt).\n\n" +
+            ([.results[] | select(.status == "changed") |
+              "### \(.id)\n\(.url)\n\n**was:** \(.previousValue | tostring)\n\n**now:** \(.value | tostring)\n"
+            ] | join("\n"))
+          ' last-run.json)
+          gh issue create \
+            --title "watch: $changed change(s) on $(date -u +%Y-%m-%d)" \
+            --body "$body"
+
+      - name: Notify Slack when a target changed
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        working-directory: watch
+        run: |
+          changed=$(jq -r '.changed' last-run.json)
+          if [ "$changed" -eq 0 ]; then
+            exit 0
+          fi
+          text=$(jq -r '[.results[] | select(.status == "changed") | "• *\(.id)*: \(.previousValue | tostring) → \(.value | tostring)"] | join("\n")' last-run.json)
+          jq -n --arg text "$text" '{text: ("Watcher changes:\n" + $text)}' \
+            | curl -sS -X POST -H 'content-type: application/json' -d @- "$SLACK_WEBHOOK_URL"
