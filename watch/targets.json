@@ -1,0 +1,51 @@
+{
+  "defaults": {
+    "waitUntil": "domcontentloaded",
+    "timeout": 30000,
+    "screenshot": true,
+    "fullPage": false,
+    "viewport": { "width": 1280, "height": 800 }
+  },
+  "targets": [
+    {
+      "id": "canary",
+      "note": "Proves the runner, the browser and the commit-back loop all still work. Keep it enabled.",
+      "url": "https://example.com",
+      "extract": { "type": "text", "selector": "h1" },
+      "enabled": true
+    },
+    {
+      "id": "example-latest-release",
+      "note": "Template: read one value off a page with a CSS selector.",
+      "url": "https://github.com/Bonchaloo/homebrew-tap/releases",
+      "extract": { "type": "text", "selector": "[data-testid='latest-release'] .Link--primary" },
+      "enabled": false
+    },
+    {
+      "id": "example-list",
+      "note": "Template: collect several matches at once. Use limit to cap the list.",
+      "url": "https://example.com",
+      "extract": { "type": "texts", "selector": "p", "limit": 10 },
+      "enabled": false
+    },
+    {
+      "id": "example-price",
+      "note": "Template: pages that render late. waitForSelector blocks until the value exists, settleMs adds a pause after that.",
+      "url": "https://example.com/quote",
+      "waitForSelector": "[data-field='price']",
+      "settleMs": 1500,
+      "extract": { "type": "text", "selector": "[data-field='price']" },
+      "enabled": false
+    },
+    {
+      "id": "example-script",
+      "note": "Template: anything a selector cannot express. Runs in the page, must return JSON-serialisable data.",
+      "url": "https://example.com",
+      "extract": {
+        "type": "script",
+        "body": "() => ({ links: document.querySelectorAll('a').length, heading: document.querySelector('h1')?.innerText ?? null })"
+      },
+      "enabled": false
+    }
+  ]
+}
